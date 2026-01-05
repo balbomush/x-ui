@@ -51,17 +51,19 @@
         </template>
         <a-input v-model.trim="client.subId"></a-input>
     </a-form-item>
-    <a-form-item v-if="client.email && app.tgBotEnable">
+    <a-form-item v-if="client.email">
         <template slot="label">
             <a-tooltip>
                 <template slot="title">
                     <span>{{ i18n "pages.inbounds.telegramDesc" }}</span>
+                    <br>
+                    <span>Используется для команды /configs в Telegram боте. Укажите Telegram ID или username (без @)</span>
                 </template>
                 Telegram ID
                 <a-icon type="question-circle"></a-icon>
             </a-tooltip>
         </template>
-        <a-input v-model.trim="client.tgId"></a-input>
+        <a-input v-model.trim="client.tgId" placeholder="Telegram ID или username"></a-input>
     </a-form-item>
     <a-form-item v-if="inbound.canEnableTlsFlow()" label='Flow'>
         <a-select v-model="client.flow" :dropdown-class-name="themeSwitcher.currentTheme">
