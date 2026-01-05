@@ -504,6 +504,7 @@
 "clientUsage" = "Получить статистику"
 "onlines" = "Онлайн-клиенты"
 "commands" = "Команды"
+"configs" = "Конфиги"
 
 [tgbot.answers]
 "getInboundsFailed" = "❌ Не удалось получить подключения."
