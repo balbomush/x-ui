@@ -15,3 +15,7 @@ release/
 /release.sh
 /x-ui
 .DS_Store
+TELEGRAM_BOT_FUNCTIONALITY.md
+*_test.go
+*_mock.go
+DOCKER_TESTING.md

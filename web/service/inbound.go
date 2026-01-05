@@ -1386,6 +1386,109 @@ func (s *InboundService) SearchInbounds(query string) ([]*model.Inbound, error) 
 	return inbounds, nil
 }
 
+// GetClientsByTgID returns all clients with their inbounds that match the given Telegram ID or username
+func (s *InboundService) GetClientsByTgID(tgid string, tguname string) ([]struct {
+	Inbound *model.Inbound
+	Client  *model.Client
+	Email   string
+}, error) {
+	db := database.GetDB()
+	var results []struct {
+		Inbound *model.Inbound
+		Client  *model.Client
+		Email   string
+	}
+
+	// Get all inbounds
+	var inbounds []*model.Inbound
+	err := db.Model(model.Inbound{}).Preload("ClientStats").Find(&inbounds).Error
+	if err != nil {
+		return nil, err
+	}
+
+	// Search through inbounds for clients with matching tgId
+	for _, inbound := range inbounds {
+		if !inbound.Enable {
+			continue
+		}
+
+		var settings map[string]interface{}
+		err := json.Unmarshal([]byte(inbound.Settings), &settings)
+		if err != nil {
+			continue
+		}
+
+		clients, ok := settings["clients"].([]interface{})
+		if !ok {
+			continue
+		}
+
+		for _, clientInterface := range clients {
+			clientMap, ok := clientInterface.(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			clientTgID, _ := clientMap["tgId"].(string)
+			clientEmail, _ := clientMap["email"].(string)
+
+			// Check if tgId matches
+			if clientTgID == tgid || clientTgID == tguname {
+				client := &model.Client{
+					ID:         getStringFromMap(clientMap, "id"),
+					Password:   getStringFromMap(clientMap, "password"),
+					Flow:       getStringFromMap(clientMap, "flow"),
+					Email:      clientEmail,
+					TgID:       clientTgID,
+					SubID:      getStringFromMap(clientMap, "subId"),
+					Enable:     getBoolFromMap(clientMap, "enable", true),
+					TotalGB:    getInt64FromMap(clientMap, "totalGB"),
+					ExpiryTime: getInt64FromMap(clientMap, "expiryTime"),
+				}
+
+				results = append(results, struct {
+					Inbound *model.Inbound
+					Client  *model.Client
+					Email   string
+				}{
+					Inbound: inbound,
+					Client:  client,
+					Email:   clientEmail,
+				})
+			}
+		}
+	}
+
+	return results, nil
+}
+
+// Helper functions for extracting values from map[string]interface{}
+func getStringFromMap(m map[string]interface{}, key string) string {
+	if val, ok := m[key].(string); ok {
+		return val
+	}
+	return ""
+}
+
+func getBoolFromMap(m map[string]interface{}, key string, defaultValue bool) bool {
+	if val, ok := m[key].(bool); ok {
+		return val
+	}
+	return defaultValue
+}
+
+func getInt64FromMap(m map[string]interface{}, key string) int64 {
+	switch v := m[key].(type) {
+	case int64:
+		return v
+	case float64:
+		return int64(v)
+	case int:
+		return int64(v)
+	}
+	return 0
+}
+
 func (s *InboundService) GetInboundTags() (string, error) {
 	db := database.GetDB()
 	var inboundTags []string

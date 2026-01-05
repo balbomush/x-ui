@@ -33,6 +33,10 @@ func NewSubService(showInfo bool, remarkModel string) *SubService {
 	}
 }
 
+func (s *SubService) SetAddress(address string) {
+	s.address = address
+}
+
 func (s *SubService) GetSubs(subId string, host string) ([]string, string, error) {
 	s.address = host
 	var result []string
@@ -63,7 +67,7 @@ func (s *SubService) GetSubs(subId string, host string) ([]string, string, error
 		}
 		for _, client := range clients {
 			if client.Enable && client.SubID == subId {
-				link := s.getLink(inbound, client.Email)
+				link := s.GetLink(inbound, client.Email)
 				result = append(result, link)
 				clientTraffics = append(clientTraffics, s.getClientTraffics(inbound.ClientStats, client.Email))
 			}
@@ -145,7 +149,7 @@ func (s *SubService) getFallbackMaster(dest string, streamSettings string) (stri
 	return inbound.Listen, inbound.Port, string(modifiedStream), nil
 }
 
-func (s *SubService) getLink(inbound *model.Inbound, email string) string {
+func (s *SubService) GetLink(inbound *model.Inbound, email string) string {
 	switch inbound.Protocol {
 	case "vmess":
 		return s.genVmessLink(inbound, email)

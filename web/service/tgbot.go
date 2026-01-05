@@ -2,8 +2,11 @@ package service
 
 import (
 	"embed"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -18,6 +21,7 @@ import (
 	"github.com/alireza0/x-ui/xray"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/skip2/go-qrcode"
 )
 
 var (
@@ -185,6 +189,9 @@ func (t *Tgbot) answerCommand(message *tgbotapi.Message, chatId int64, isAdmin b
 		} else {
 			msg += t.I18nBot("tgbot.commands.unknown")
 		}
+	case "configs":
+		onlyMessage = true
+		t.sendClientConfigs(chatId, message.From.ID, message.From.UserName)
 	default:
 		msg += t.I18nBot("tgbot.commands.unknown")
 	}
@@ -723,4 +730,325 @@ func (t *Tgbot) sendBackup(chatId int64) {
 	if err != nil {
 		logger.Warning("Error in uploading config.json: ", err)
 	}
+}
+
+func (t *Tgbot) sendClientConfigs(chatId int64, tgId int64, tgUserName string) {
+	if !t.IsRunning() {
+		return
+	}
+
+	tgIdStr := strconv.FormatInt(tgId, 10)
+	tgUserNameStr := ""
+	if tgUserName != "" {
+		tgUserNameStr = tgUserName
+	}
+
+	// Get all clients with matching tgID
+	clientInbounds, err := t.inboundService.GetClientsByTgID(tgIdStr, tgUserNameStr)
+	if err != nil {
+		logger.Warning("Error getting clients by tgID:", err)
+		msg := t.I18nBot("tgbot.wentWrong")
+		t.SendMsgToTgbot(chatId, msg)
+		return
+	}
+
+	if len(clientInbounds) == 0 {
+		username := tgUserNameStr
+		if username == "" {
+			username = tgIdStr
+		}
+		msg := fmt.Sprintf("Пользователь с таким ником %s не найден. Обратитесь к администратору", username)
+		t.SendMsgToTgbot(chatId, msg)
+		return
+	}
+
+	// Get server address for generating links
+	serverAddress := t.getServerAddress()
+
+	// Send config for each client
+	for _, clientInbound := range clientInbounds {
+		if !clientInbound.Client.Enable {
+			continue
+		}
+
+		// Generate configuration link
+		configLink := t.generateConfigLink(clientInbound.Inbound, clientInbound.Email, serverAddress)
+		if configLink == "" {
+			logger.Warning("Failed to generate link for client:", clientInbound.Email)
+			continue
+		}
+
+		// Generate QR code
+		qrCode, err := qrcode.Encode(configLink, qrcode.Medium, 256)
+		if err != nil {
+			logger.Warning("Error generating QR code:", err)
+			// Send text only if QR generation fails
+			msg := fmt.Sprintf("📋 <b>%s</b>\n\n<code>%s</code>", clientInbound.Inbound.Remark, configLink)
+			t.SendMsgToTgbot(chatId, msg)
+			continue
+		}
+
+		// Prepare message text
+		msgText := fmt.Sprintf("📋 <b>%s</b>\n\n<code>%s</code>", clientInbound.Inbound.Remark, configLink)
+
+		// Send photo with QR code and text
+		photo := tgbotapi.NewPhoto(chatId, tgbotapi.FileBytes{
+			Name:  "qrcode.png",
+			Bytes: qrCode,
+		})
+		photo.Caption = msgText
+		photo.ParseMode = "HTML"
+
+		_, err = bot.Send(photo)
+		if err != nil {
+			logger.Warning("Error sending QR code:", err)
+			// Fallback to text only
+			t.SendMsgToTgbot(chatId, msgText)
+		}
+
+		// Small delay between messages
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func (t *Tgbot) getServerAddress() string {
+	// Try to get domain first
+	domain, err := t.settingService.GetWebDomain()
+	if err == nil && domain != "" {
+		return domain
+	}
+
+	// Try to get listen address
+	listen, err := t.settingService.GetListen()
+	if err == nil && listen != "" && listen != "0.0.0.0" && listen != "::" {
+		return listen
+	}
+
+	// Fallback to hostname
+	if hostname != "" {
+		return hostname
+	}
+
+	// Last resort: try to get IP address
+	netInterfaces, err := net.Interfaces()
+	if err == nil {
+		for i := 0; i < len(netInterfaces); i++ {
+			if (netInterfaces[i].Flags & net.FlagUp) != 0 {
+				addrs, _ := netInterfaces[i].Addrs()
+				for _, address := range addrs {
+					if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+						if ipnet.IP.To4() != nil {
+							return ipnet.IP.String()
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return "127.0.0.1"
+}
+
+// generateConfigLink generates a configuration link for a client
+// This is a simplified version to avoid circular import with sub package
+func (t *Tgbot) generateConfigLink(inbound *model.Inbound, email string, address string) string {
+	clients, err := t.inboundService.GetClients(inbound)
+	if err != nil {
+		return ""
+	}
+
+	var client *model.Client
+	for i := range clients {
+		if clients[i].Email == email {
+			client = &clients[i]
+			break
+		}
+	}
+	if client == nil {
+		return ""
+	}
+
+	switch inbound.Protocol {
+	case model.VLESS:
+		return t.generateVlessLink(inbound, client, address)
+	case model.VMess:
+		return t.generateVmessLink(inbound, client, address)
+	case model.Trojan:
+		return t.generateTrojanLink(inbound, client, address)
+	case model.Shadowsocks:
+		return t.generateShadowsocksLink(inbound, client, address)
+	}
+	return ""
+}
+
+// Helper functions for generating links (simplified versions)
+func (t *Tgbot) generateVlessLink(inbound *model.Inbound, client *model.Client, address string) string {
+	var stream map[string]interface{}
+	json.Unmarshal([]byte(inbound.StreamSettings), &stream)
+
+	link := fmt.Sprintf("vless://%s@%s:%d", client.ID, address, inbound.Port)
+	u, _ := url.Parse(link)
+	q := u.Query()
+
+	// Add basic parameters
+	streamNetwork, _ := stream["network"].(string)
+	q.Set("type", streamNetwork)
+
+	// Add stream settings based on network type
+	switch streamNetwork {
+	case "ws":
+		if ws, ok := stream["wsSettings"].(map[string]interface{}); ok {
+			if path, ok := ws["path"].(string); ok {
+				q.Set("path", path)
+			}
+			if host, ok := ws["host"].(string); ok && host != "" {
+				q.Set("host", host)
+			}
+		}
+	case "grpc":
+		if grpc, ok := stream["grpcSettings"].(map[string]interface{}); ok {
+			if serviceName, ok := grpc["serviceName"].(string); ok {
+				q.Set("serviceName", serviceName)
+			}
+		}
+	}
+
+	// Add security settings
+	security, _ := stream["security"].(string)
+	if security == "tls" {
+		q.Set("security", "tls")
+		if tls, ok := stream["tlsSettings"].(map[string]interface{}); ok {
+			if sni, ok := t.searchKey(tls, "serverName"); ok {
+				q.Set("sni", sni.(string))
+			}
+		}
+	} else if security == "reality" {
+		q.Set("security", "reality")
+		if reality, ok := stream["realitySettings"].(map[string]interface{}); ok {
+			if settings, ok := t.searchKey(reality, "settings"); ok {
+				if pbk, ok := t.searchKey(settings, "publicKey"); ok {
+					q.Set("pbk", pbk.(string))
+				}
+			}
+			if serverNames, ok := reality["serverNames"].([]interface{}); ok && len(serverNames) > 0 {
+				q.Set("sni", serverNames[0].(string))
+			}
+			if shortIds, ok := reality["shortIds"].([]interface{}); ok && len(shortIds) > 0 {
+				q.Set("sid", shortIds[0].(string))
+			}
+		}
+	} else {
+		q.Set("security", "none")
+	}
+
+	u.RawQuery = q.Encode()
+	u.Fragment = inbound.Remark
+	return u.String()
+}
+
+func (t *Tgbot) generateVmessLink(inbound *model.Inbound, client *model.Client, address string) string {
+	var stream map[string]interface{}
+	json.Unmarshal([]byte(inbound.StreamSettings), &stream)
+
+	obj := map[string]interface{}{
+		"v":    "2",
+		"add":  address,
+		"port": inbound.Port,
+		"id":   client.ID,
+		"type": "none",
+	}
+
+	network, _ := stream["network"].(string)
+	obj["net"] = network
+
+	// Add stream settings
+	switch network {
+	case "ws":
+		if ws, ok := stream["wsSettings"].(map[string]interface{}); ok {
+			if path, ok := ws["path"].(string); ok {
+				obj["path"] = path
+			}
+			if host, ok := ws["host"].(string); ok && host != "" {
+				obj["host"] = host
+			}
+		}
+	}
+
+	security, _ := stream["security"].(string)
+	obj["tls"] = security
+
+	obj["ps"] = inbound.Remark
+
+	jsonStr, _ := json.Marshal(obj)
+	return "vmess://" + base64.StdEncoding.EncodeToString(jsonStr)
+}
+
+func (t *Tgbot) generateTrojanLink(inbound *model.Inbound, client *model.Client, address string) string {
+	var stream map[string]interface{}
+	json.Unmarshal([]byte(inbound.StreamSettings), &stream)
+
+	link := fmt.Sprintf("trojan://%s@%s:%d", client.Password, address, inbound.Port)
+	u, _ := url.Parse(link)
+	q := u.Query()
+
+	streamNetwork, _ := stream["network"].(string)
+	q.Set("type", streamNetwork)
+
+	if streamNetwork == "ws" {
+		if ws, ok := stream["wsSettings"].(map[string]interface{}); ok {
+			if path, ok := ws["path"].(string); ok {
+				q.Set("path", path)
+			}
+			if host, ok := ws["host"].(string); ok && host != "" {
+				q.Set("host", host)
+			}
+		}
+	}
+
+	security, _ := stream["security"].(string)
+	if security == "tls" {
+		q.Set("security", "tls")
+	} else {
+		q.Set("security", "none")
+	}
+
+	u.RawQuery = q.Encode()
+	u.Fragment = inbound.Remark
+	return u.String()
+}
+
+func (t *Tgbot) generateShadowsocksLink(inbound *model.Inbound, client *model.Client, address string) string {
+	var settings map[string]interface{}
+	json.Unmarshal([]byte(inbound.Settings), &settings)
+
+	method, _ := settings["method"].(string)
+	password := client.Password
+
+	encPart := fmt.Sprintf("%s:%s", method, password)
+	link := fmt.Sprintf("ss://%s@%s:%d", base64.StdEncoding.EncodeToString([]byte(encPart)), address, inbound.Port)
+	u, _ := url.Parse(link)
+	u.Fragment = inbound.Remark
+	return u.String()
+}
+
+// Helper function to search for a key in nested map
+func (t *Tgbot) searchKey(data interface{}, key string) (interface{}, bool) {
+	switch val := data.(type) {
+	case map[string]interface{}:
+		for k, v := range val {
+			if k == key {
+				return v, true
+			}
+			if result, ok := t.searchKey(v, key); ok {
+				return result, true
+			}
+		}
+	case []interface{}:
+		for _, v := range val {
+			if result, ok := t.searchKey(v, key); ok {
+				return result, true
+			}
+		}
+	}
+	return nil, false
 }
