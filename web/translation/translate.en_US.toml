@@ -505,6 +505,7 @@
 "clientUsage" = "Get Usage"
 "onlines" = "Online Clients"
 "commands" = "Commands"
+"configs" = "Configs"
 
 [tgbot.answers]
 "getInboundsFailed" = "❌ Failed to get inbounds"

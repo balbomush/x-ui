@@ -145,6 +145,9 @@ func (t *Tgbot) OnReceive() {
 		} else {
 			if update.Message.IsCommand() {
 				t.answerCommand(update.Message, chatId, isAdmin)
+			} else {
+				// Handle reply keyboard button presses
+				t.handleReplyKeyboard(update.Message, chatId, isAdmin)
 			}
 		}
 	}
@@ -166,6 +169,10 @@ func (t *Tgbot) answerCommand(message *tgbotapi.Message, chatId int64, isAdmin b
 			msg += t.I18nBot("tgbot.commands.welcome", "Hostname=="+hostname)
 		}
 		msg += "\n\n" + t.I18nBot("tgbot.commands.pleaseChoose")
+		// Send reply keyboard
+		replyKeyboard := t.getReplyKeyboard(isAdmin)
+		t.SendMsgToTgbotWithReplyKeyboard(chatId, msg, replyKeyboard)
+		return
 	case "status":
 		onlyMessage = true
 		msg += t.I18nBot("tgbot.commands.status")
@@ -276,6 +283,111 @@ func (t *Tgbot) SendAnswer(chatId int64, msg string, isAdmin bool) {
 		keyboardMarkup = numericKeyboardClient
 	}
 	t.SendMsgToTgbot(chatId, msg, keyboardMarkup)
+}
+
+// getReplyKeyboard creates a persistent reply keyboard for users
+func (t *Tgbot) getReplyKeyboard(isAdmin bool) tgbotapi.ReplyKeyboardMarkup {
+	if isAdmin {
+		// Admin keyboard with more options
+		keyboard := tgbotapi.NewReplyKeyboard(
+			tgbotapi.NewKeyboardButtonRow(
+				tgbotapi.NewKeyboardButton(t.I18nBot("tgbot.buttons.configs")),
+				tgbotapi.NewKeyboardButton(t.I18nBot("tgbot.buttons.clientUsage")),
+			),
+			tgbotapi.NewKeyboardButtonRow(
+				tgbotapi.NewKeyboardButton(t.I18nBot("tgbot.buttons.serverUsage")),
+				tgbotapi.NewKeyboardButton(t.I18nBot("tgbot.buttons.onlines")),
+			),
+		)
+		keyboard.ResizeKeyboard = true
+		keyboard.OneTimeKeyboard = false
+		return keyboard
+	} else {
+		// Client keyboard with basic options
+		keyboard := tgbotapi.NewReplyKeyboard(
+			tgbotapi.NewKeyboardButtonRow(
+				tgbotapi.NewKeyboardButton(t.I18nBot("tgbot.buttons.configs")),
+				tgbotapi.NewKeyboardButton(t.I18nBot("tgbot.buttons.clientUsage")),
+			),
+		)
+		keyboard.ResizeKeyboard = true
+		keyboard.OneTimeKeyboard = false
+		return keyboard
+	}
+}
+
+// handleReplyKeyboard processes button presses from reply keyboard
+func (t *Tgbot) handleReplyKeyboard(message *tgbotapi.Message, chatId int64, isAdmin bool) {
+	text := message.Text
+	if text == "" {
+		return
+	}
+
+	// Check if the text matches any button label
+	configsText := t.I18nBot("tgbot.buttons.configs")
+	clientUsageText := t.I18nBot("tgbot.buttons.clientUsage")
+	serverUsageText := t.I18nBot("tgbot.buttons.serverUsage")
+	onlinesText := t.I18nBot("tgbot.buttons.onlines")
+
+	switch text {
+	case configsText:
+		t.sendClientConfigs(chatId, message.From.ID, message.From.UserName)
+	case clientUsageText:
+		t.getClientUsage(chatId, message.From.UserName)
+	case serverUsageText:
+		if isAdmin {
+			t.SendMsgToTgbot(chatId, t.getServerUsage())
+		}
+	case onlinesText:
+		if isAdmin {
+			t.onlineClients(chatId)
+		}
+	default:
+		// Unknown button press, ignore
+		return
+	}
+}
+
+// SendMsgToTgbotWithReplyKeyboard sends a message with reply keyboard
+func (t *Tgbot) SendMsgToTgbotWithReplyKeyboard(tgid int64, msg string, replyKeyboard tgbotapi.ReplyKeyboardMarkup) {
+	if !isRunning {
+		return
+	}
+
+	if msg == "" {
+		logger.Info("[tgbot] message is empty!")
+		return
+	}
+
+	var allMessages []string
+	limit := 2000
+
+	// paging message if it is big
+	if len(msg) > limit {
+		messages := strings.Split(msg, "\r\n \r\n")
+		lastIndex := -1
+
+		for _, message := range messages {
+			if (len(allMessages) == 0) || (len(allMessages[lastIndex])+len(message) > limit) {
+				allMessages = append(allMessages, message)
+				lastIndex++
+			} else {
+				allMessages[lastIndex] += "\r\n \r\n" + message
+			}
+		}
+	} else {
+		allMessages = append(allMessages, msg)
+	}
+	for _, message := range allMessages {
+		info := tgbotapi.NewMessage(tgid, message)
+		info.ParseMode = "HTML"
+		info.ReplyMarkup = replyKeyboard
+		_, err := bot.Send(info)
+		if err != nil {
+			logger.Warning("Error sending telegram message :", err)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 }
 
 func (t *Tgbot) SendMsgToTgbot(tgid int64, msg string, replyMarkup ...tgbotapi.InlineKeyboardMarkup) {
