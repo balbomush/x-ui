@@ -1109,29 +1109,142 @@ func (t *Tgbot) generateTrojanLink(inbound *model.Inbound, client *model.Client,
 	u, _ := url.Parse(link)
 	q := u.Query()
 
+	// Add type parameter (must be first)
 	streamNetwork, _ := stream["network"].(string)
 	q.Set("type", streamNetwork)
 
-	if streamNetwork == "ws" {
+	// Add stream settings based on network type
+	switch streamNetwork {
+	case "tcp":
+		if tcp, ok := stream["tcpSettings"].(map[string]interface{}); ok {
+			if header, ok := tcp["header"].(map[string]interface{}); ok {
+				if headerType, ok := header["type"].(string); ok && headerType == "http" {
+					if request, ok := header["request"].(map[string]interface{}); ok {
+						if path, ok := request["path"].([]interface{}); ok && len(path) > 0 {
+							q.Set("path", path[0].(string))
+						}
+						if headers, ok := request["headers"].(map[string]interface{}); ok {
+							if host, ok := headers["Host"].([]interface{}); ok && len(host) > 0 {
+								q.Set("host", host[0].(string))
+							}
+						}
+						q.Set("headerType", "http")
+					}
+				}
+			}
+		}
+	case "ws":
 		if ws, ok := stream["wsSettings"].(map[string]interface{}); ok {
 			if path, ok := ws["path"].(string); ok {
 				q.Set("path", path)
 			}
 			if host, ok := ws["host"].(string); ok && host != "" {
 				q.Set("host", host)
+			} else if headers, ok := ws["headers"].(map[string]interface{}); ok {
+				if host, ok := headers["Host"].([]interface{}); ok && len(host) > 0 {
+					q.Set("host", host[0].(string))
+				}
+			}
+		}
+	case "grpc":
+		if grpc, ok := stream["grpcSettings"].(map[string]interface{}); ok {
+			if serviceName, ok := grpc["serviceName"].(string); ok {
+				q.Set("serviceName", serviceName)
+			}
+			if authority, ok := grpc["authority"].(string); ok && authority != "" {
+				q.Set("authority", authority)
+			}
+			if multiMode, ok := grpc["multiMode"].(bool); ok && multiMode {
+				q.Set("mode", "multi")
+			}
+		}
+	case "httpupgrade":
+		if httpupgrade, ok := stream["httpupgradeSettings"].(map[string]interface{}); ok {
+			if path, ok := httpupgrade["path"].(string); ok {
+				q.Set("path", path)
+			}
+			if host, ok := httpupgrade["host"].(string); ok && host != "" {
+				q.Set("host", host)
+			}
+		}
+	case "xhttp":
+		if xhttp, ok := stream["xhttpSettings"].(map[string]interface{}); ok {
+			if path, ok := xhttp["path"].(string); ok {
+				q.Set("path", path)
+			}
+			if host, ok := xhttp["host"].(string); ok && host != "" {
+				q.Set("host", host)
+			}
+			if mode, ok := xhttp["mode"].(string); ok {
+				q.Set("mode", mode)
 			}
 		}
 	}
 
+	// Add security settings
 	security, _ := stream["security"].(string)
 	if security == "tls" {
 		q.Set("security", "tls")
+		if tls, ok := stream["tlsSettings"].(map[string]interface{}); ok {
+			if sni, ok := t.searchKey(tls, "serverName"); ok {
+				q.Set("sni", sni.(string))
+			}
+			if settings, ok := t.searchKey(tls, "settings"); ok {
+				if fp, ok := t.searchKey(settings, "fingerprint"); ok {
+					if fpStr, ok := fp.(string); ok && fpStr != "" {
+						q.Set("fp", fpStr)
+					}
+				}
+			}
+		}
+	} else if security == "reality" {
+		q.Set("security", "reality")
+		if reality, ok := stream["realitySettings"].(map[string]interface{}); ok {
+			realitySettings, _ := t.searchKey(reality, "settings")
+			if realitySettings != nil {
+				if pbk, ok := t.searchKey(realitySettings, "publicKey"); ok {
+					if pbkStr, ok := pbk.(string); ok && pbkStr != "" {
+						q.Set("pbk", pbkStr)
+					}
+				}
+				if fp, ok := t.searchKey(realitySettings, "fingerprint"); ok {
+					if fpStr, ok := fp.(string); ok && fpStr != "" {
+						q.Set("fp", fpStr)
+					}
+				}
+				if pqv, ok := t.searchKey(realitySettings, "mldsa65Verify"); ok {
+					if pqvStr, ok := pqv.(string); ok && pqvStr != "" {
+						q.Set("pqv", pqvStr)
+					}
+				}
+				if spx, ok := t.searchKey(reality, "spiderX"); ok {
+					if spxStr, ok := spx.(string); ok && spxStr != "" {
+						q.Set("spx", spxStr)
+					} else {
+						// Generate random spx if not present
+						q.Set("spx", "/"+random.Seq(15))
+					}
+				} else {
+					// Generate random spx if not present
+					q.Set("spx", "/"+random.Seq(15))
+				}
+			}
+			if serverNames, ok := reality["serverNames"].([]interface{}); ok && len(serverNames) > 0 {
+				q.Set("sni", serverNames[0].(string))
+			}
+			if shortIds, ok := reality["shortIds"].([]interface{}); ok && len(shortIds) > 0 {
+				q.Set("sid", shortIds[0].(string))
+			} else {
+				q.Set("sid", "")
+			}
+		}
 	} else {
 		q.Set("security", "none")
 	}
 
 	u.RawQuery = q.Encode()
-	u.Fragment = inbound.Remark
+	// Use client email as fragment instead of remark
+	u.Fragment = client.Email
 	return u.String()
 }
 
