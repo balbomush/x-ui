@@ -17,6 +17,7 @@ import (
 	"github.com/alireza0/x-ui/database/model"
 	"github.com/alireza0/x-ui/logger"
 	"github.com/alireza0/x-ui/util/common"
+	"github.com/alireza0/x-ui/util/random"
 	"github.com/alireza0/x-ui/web/locale"
 	"github.com/alireza0/x-ui/xray"
 
@@ -883,6 +884,9 @@ func (t *Tgbot) generateConfigLink(inbound *model.Inbound, email string, address
 
 // Helper functions for generating links (simplified versions)
 func (t *Tgbot) generateVlessLink(inbound *model.Inbound, client *model.Client, address string) string {
+	var vlessSettings model.VLESSSettings
+	json.Unmarshal([]byte(inbound.Settings), &vlessSettings)
+
 	var stream map[string]interface{}
 	json.Unmarshal([]byte(inbound.StreamSettings), &stream)
 
@@ -890,12 +894,37 @@ func (t *Tgbot) generateVlessLink(inbound *model.Inbound, client *model.Client, 
 	u, _ := url.Parse(link)
 	q := u.Query()
 
-	// Add basic parameters
+	// Add encryption parameter
+	if vlessSettings.Encryption != "" {
+		q.Set("encryption", vlessSettings.Encryption)
+	} else {
+		q.Set("encryption", "none")
+	}
+
+	// Add type parameter (must be first)
 	streamNetwork, _ := stream["network"].(string)
 	q.Set("type", streamNetwork)
 
 	// Add stream settings based on network type
 	switch streamNetwork {
+	case "tcp":
+		if tcp, ok := stream["tcpSettings"].(map[string]interface{}); ok {
+			if header, ok := tcp["header"].(map[string]interface{}); ok {
+				if headerType, ok := header["type"].(string); ok && headerType == "http" {
+					if request, ok := header["request"].(map[string]interface{}); ok {
+						if path, ok := request["path"].([]interface{}); ok && len(path) > 0 {
+							q.Set("path", path[0].(string))
+						}
+						if headers, ok := request["headers"].(map[string]interface{}); ok {
+							if host, ok := headers["Host"].([]interface{}); ok && len(host) > 0 {
+								q.Set("host", host[0].(string))
+							}
+						}
+						q.Set("headerType", "http")
+					}
+				}
+			}
+		}
 	case "ws":
 		if ws, ok := stream["wsSettings"].(map[string]interface{}); ok {
 			if path, ok := ws["path"].(string); ok {
@@ -903,12 +932,43 @@ func (t *Tgbot) generateVlessLink(inbound *model.Inbound, client *model.Client, 
 			}
 			if host, ok := ws["host"].(string); ok && host != "" {
 				q.Set("host", host)
+			} else if headers, ok := ws["headers"].(map[string]interface{}); ok {
+				if host, ok := headers["Host"].([]interface{}); ok && len(host) > 0 {
+					q.Set("host", host[0].(string))
+				}
 			}
 		}
 	case "grpc":
 		if grpc, ok := stream["grpcSettings"].(map[string]interface{}); ok {
 			if serviceName, ok := grpc["serviceName"].(string); ok {
 				q.Set("serviceName", serviceName)
+			}
+			if authority, ok := grpc["authority"].(string); ok && authority != "" {
+				q.Set("authority", authority)
+			}
+			if multiMode, ok := grpc["multiMode"].(bool); ok && multiMode {
+				q.Set("mode", "multi")
+			}
+		}
+	case "httpupgrade":
+		if httpupgrade, ok := stream["httpupgradeSettings"].(map[string]interface{}); ok {
+			if path, ok := httpupgrade["path"].(string); ok {
+				q.Set("path", path)
+			}
+			if host, ok := httpupgrade["host"].(string); ok && host != "" {
+				q.Set("host", host)
+			}
+		}
+	case "xhttp":
+		if xhttp, ok := stream["xhttpSettings"].(map[string]interface{}); ok {
+			if path, ok := xhttp["path"].(string); ok {
+				q.Set("path", path)
+			}
+			if host, ok := xhttp["host"].(string); ok && host != "" {
+				q.Set("host", host)
+			}
+			if mode, ok := xhttp["mode"].(string); ok {
+				q.Set("mode", mode)
 			}
 		}
 	}
@@ -921,13 +981,47 @@ func (t *Tgbot) generateVlessLink(inbound *model.Inbound, client *model.Client, 
 			if sni, ok := t.searchKey(tls, "serverName"); ok {
 				q.Set("sni", sni.(string))
 			}
+			if settings, ok := t.searchKey(tls, "settings"); ok {
+				if fp, ok := t.searchKey(settings, "fingerprint"); ok {
+					if fpStr, ok := fp.(string); ok && fpStr != "" {
+						q.Set("fp", fpStr)
+					}
+				}
+			}
+		}
+		if streamNetwork == "tcp" && client.Flow != "" {
+			q.Set("flow", client.Flow)
 		}
 	} else if security == "reality" {
 		q.Set("security", "reality")
 		if reality, ok := stream["realitySettings"].(map[string]interface{}); ok {
-			if settings, ok := t.searchKey(reality, "settings"); ok {
-				if pbk, ok := t.searchKey(settings, "publicKey"); ok {
-					q.Set("pbk", pbk.(string))
+			realitySettings, _ := t.searchKey(reality, "settings")
+			if realitySettings != nil {
+				if pbk, ok := t.searchKey(realitySettings, "publicKey"); ok {
+					if pbkStr, ok := pbk.(string); ok && pbkStr != "" {
+						q.Set("pbk", pbkStr)
+					}
+				}
+				if fp, ok := t.searchKey(realitySettings, "fingerprint"); ok {
+					if fpStr, ok := fp.(string); ok && fpStr != "" {
+						q.Set("fp", fpStr)
+					}
+				}
+				if pqv, ok := t.searchKey(realitySettings, "mldsa65Verify"); ok {
+					if pqvStr, ok := pqv.(string); ok && pqvStr != "" {
+						q.Set("pqv", pqvStr)
+					}
+				}
+				if spx, ok := t.searchKey(realitySettings, "spiderX"); ok {
+					if spxStr, ok := spx.(string); ok && spxStr != "" {
+						q.Set("spx", spxStr)
+					} else {
+						// Generate random spx if not present
+						q.Set("spx", "/"+random.Seq(15))
+					}
+				} else {
+					// Generate random spx if not present
+					q.Set("spx", "/"+random.Seq(15))
 				}
 			}
 			if serverNames, ok := reality["serverNames"].([]interface{}); ok && len(serverNames) > 0 {
@@ -935,14 +1029,20 @@ func (t *Tgbot) generateVlessLink(inbound *model.Inbound, client *model.Client, 
 			}
 			if shortIds, ok := reality["shortIds"].([]interface{}); ok && len(shortIds) > 0 {
 				q.Set("sid", shortIds[0].(string))
+			} else {
+				q.Set("sid", "")
 			}
+		}
+		if streamNetwork == "tcp" && client.Flow != "" {
+			q.Set("flow", client.Flow)
 		}
 	} else {
 		q.Set("security", "none")
 	}
 
 	u.RawQuery = q.Encode()
-	u.Fragment = inbound.Remark
+	// Use client email as fragment instead of remark
+	u.Fragment = client.Email
 	return u.String()
 }
 
