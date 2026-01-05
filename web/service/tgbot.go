@@ -815,7 +815,7 @@ func (t *Tgbot) sendClientConfigs(chatId int64, tgId int64, tgUserName string) {
 func (t *Tgbot) getServerAddress() string {
 	// Try to get domain first
 	domain, err := t.settingService.GetWebDomain()
-	if err == nil && domain != "" {
+	if err == nil && domain != "" && domain != "yourhostname" {
 		return domain
 	}
 
@@ -825,12 +825,9 @@ func (t *Tgbot) getServerAddress() string {
 		return listen
 	}
 
-	// Fallback to hostname
-	if hostname != "" {
-		return hostname
-	}
-
-	// Last resort: try to get IP address
+	// Try to get IP address from network interfaces (prefer non-loopback, non-link-local)
+	var preferredIP string
+	var fallbackIP string
 	netInterfaces, err := net.Interfaces()
 	if err == nil {
 		for i := 0; i < len(netInterfaces); i++ {
@@ -839,12 +836,33 @@ func (t *Tgbot) getServerAddress() string {
 				for _, address := range addrs {
 					if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
 						if ipnet.IP.To4() != nil {
-							return ipnet.IP.String()
+							// Prefer non-link-local addresses
+							if !ipnet.IP.IsLinkLocalUnicast() {
+								preferredIP = ipnet.IP.String()
+								break
+							} else if fallbackIP == "" {
+								fallbackIP = ipnet.IP.String()
+							}
 						}
 					}
 				}
+				if preferredIP != "" {
+					break
+				}
 			}
 		}
+	}
+
+	if preferredIP != "" {
+		return preferredIP
+	}
+	if fallbackIP != "" {
+		return fallbackIP
+	}
+
+	// Last resort: try hostname only if it's not "yourhostname"
+	if hostname != "" && hostname != "yourhostname" {
+		return hostname
 	}
 
 	return "127.0.0.1"
